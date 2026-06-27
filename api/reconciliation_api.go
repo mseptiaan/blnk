@@ -16,9 +16,15 @@ limitations under the License.
 package api
 
 import (
+	"context"
+	"encoding/json"
+	"io"
 	"net/http"
+	"net/url"
+	"path"
 	"strconv"
 	"strings"
+	"time"
 
 	model2 "github.com/blnkfinance/blnk/api/model"
 	"github.com/blnkfinance/blnk/config"
@@ -40,28 +46,112 @@ import (
 // - 500 Internal Server Error: If there is an error processing the upload.
 // - 200 OK: If the upload is successful.
 func (a Api) UploadExternalData(c *gin.Context) {
-	// Bound the request body so an oversized upload can't exhaust disk/memory.
+	var maxBytes int64
 	if cfg, cfgErr := config.Fetch(); cfgErr == nil && cfg.Server.MaxUploadSizeMB > 0 {
-		maxBytes := cfg.Server.MaxUploadSizeMB * 1024 * 1024
+		maxBytes = cfg.Server.MaxUploadSizeMB * 1024 * 1024
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBytes)
 	}
 
 	source := c.PostForm("source")
-	file, header, err := c.Request.FormFile("file")
-	if err != nil {
-		// http.MaxBytesReader surfaces oversized bodies here; report 413.
-		if strings.Contains(err.Error(), "request body too large") {
-			respondCode(c, apierror.ErrGenPayloadTooLarge, "upload exceeds the maximum allowed size", nil)
+
+	// Path 1: multipart file upload (existing behaviour, unchanged).
+	file, header, fileErr := c.Request.FormFile("file")
+	if fileErr == nil {
+		defer file.Close()
+		fileName := header.Filename
+		uploadID, total, err := a.blnk.UploadExternalData(c.Request.Context(), source, file, fileName)
+		if err != nil {
+			logrus.Error(err)
+			respondCode(c, apierror.ErrReconUploadProcessingFailed, "Failed to process upload", nil)
 			return
 		}
+		c.JSON(http.StatusOK, gin.H{"upload_id": uploadID, "record_count": total, "source": source})
+		return
+	}
+
+	// Check for oversized body before falling through to URL path.
+	if strings.Contains(fileErr.Error(), "request body too large") {
+		respondCode(c, apierror.ErrGenPayloadTooLarge, "upload exceeds the maximum allowed size", nil)
+		return
+	}
+
+	// Path 2: URL-based download.
+	rawURL := c.PostForm("url")
+	if rawURL == "" {
+		// Try JSON body: {"url": "...", "source": "..."}
+		var body struct {
+			URL    string `json:"url"`
+			Source string `json:"source"`
+		}
+		if err := json.NewDecoder(c.Request.Body).Decode(&body); err == nil && body.URL != "" {
+			rawURL = body.URL
+			if source == "" {
+				source = body.Source
+			}
+		}
+	}
+
+	if rawURL == "" {
 		respondCode(c, apierror.ErrReconUploadFailed, "File upload failed", nil)
 		return
 	}
-	defer file.Close()
 
-	fileName := header.Filename
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
+		respondCode(c, apierror.ErrReconURLInvalidScheme, "URL must use http or https scheme", nil)
+		return
+	}
 
-	uploadID, total, err := a.blnk.UploadExternalData(c.Request.Context(), source, file, fileName)
+	// Domain whitelist check.
+	if cfg, cfgErr := config.Fetch(); cfgErr == nil && cfg.Server.UploadWhitelist != "" {
+		allowed := false
+		host := strings.ToLower(parsedURL.Hostname())
+		for _, domain := range strings.Split(cfg.Server.UploadWhitelist, ",") {
+			domain = strings.TrimSpace(strings.ToLower(domain))
+			if domain != "" && (host == domain || strings.HasSuffix(host, "."+domain)) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			respondCode(c, apierror.ErrReconURLNotWhitelisted, "URL domain is not whitelisted", nil)
+			return
+		}
+	}
+
+	fileName := path.Base(parsedURL.Path)
+	if fileName == "" || fileName == "." || fileName == "/" {
+		fileName = "download"
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		respondCode(c, apierror.ErrReconURLFetchFailed, "Failed to fetch URL", nil)
+		return
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		logrus.Error(err)
+		respondCode(c, apierror.ErrReconURLFetchFailed, "Failed to fetch URL", nil)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		respondCode(c, apierror.ErrReconURLFetchFailed, "URL returned an error", nil)
+		return
+	}
+
+	var reader io.Reader = resp.Body
+	if maxBytes > 0 {
+		reader = io.LimitReader(resp.Body, maxBytes)
+	}
+
+	uploadID, total, err := a.blnk.UploadExternalData(c.Request.Context(), source, reader, fileName)
 	if err != nil {
 		logrus.Error(err)
 		respondCode(c, apierror.ErrReconUploadProcessingFailed, "Failed to process upload", nil)

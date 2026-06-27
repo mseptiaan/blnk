@@ -96,16 +96,17 @@ var (
 var ConfigStore atomic.Value
 
 type ServerConfig struct {
-	SSL                bool   `json:"ssl" envconfig:"BLNK_SERVER_SSL"`
-	CertStoragePath    string `json:"cert_storage_path" envconfig:"BLNK_CERT_STORAGE_PATH"`
-	Secure             bool   `json:"secure" envconfig:"BLNK_SERVER_SECURE"`
-	SecretKey          string `json:"secret_key" envconfig:"BLNK_SERVER_SECRET_KEY"`
-	Domain             string `json:"domain" envconfig:"BLNK_SERVER_SSL_DOMAIN"`
-	Email              string `json:"ssl_email" envconfig:"BLNK_SERVER_SSL_EMAIL"`
-	Port               string `json:"port" envconfig:"BLNK_SERVER_PORT"`
-	MetricsBearerToken string `json:"metrics_bearer_token" envconfig:"BLNK_METRICS_BEARER_TOKEN"`
-	MaxUploadSizeMB      int64 `json:"max_upload_size_mb" envconfig:"BLNK_SERVER_MAX_UPLOAD_SIZE_MB"`
-	MaxRequestBodySizeMB int64 `json:"max_request_body_size_mb" envconfig:"BLNK_SERVER_MAX_REQUEST_BODY_SIZE_MB"`
+	SSL                  bool   `json:"ssl" envconfig:"BLNK_SERVER_SSL"`
+	CertStoragePath      string `json:"cert_storage_path" envconfig:"BLNK_CERT_STORAGE_PATH"`
+	Secure               bool   `json:"secure" envconfig:"BLNK_SERVER_SECURE"`
+	SecretKey            string `json:"secret_key" envconfig:"BLNK_SERVER_SECRET_KEY"`
+	Domain               string `json:"domain" envconfig:"BLNK_SERVER_SSL_DOMAIN"`
+	Email                string `json:"ssl_email" envconfig:"BLNK_SERVER_SSL_EMAIL"`
+	Port                 string `json:"port" envconfig:"BLNK_SERVER_PORT"`
+	MetricsBearerToken   string `json:"metrics_bearer_token" envconfig:"BLNK_METRICS_BEARER_TOKEN"`
+	MaxUploadSizeMB      int64  `json:"max_upload_size_mb" envconfig:"BLNK_SERVER_MAX_UPLOAD_SIZE_MB"`
+	MaxRequestBodySizeMB int64  `json:"max_request_body_size_mb" envconfig:"BLNK_SERVER_MAX_REQUEST_BODY_SIZE_MB"`
+	UploadWhitelist      string `json:"upload_whitelist" envconfig:"BLNK_UPLOAD_WHITELIST"`
 }
 
 type DataSourceConfig struct {
@@ -160,15 +161,15 @@ type Notification struct {
 }
 
 type TransactionConfig struct {
-	BatchSize                  int           `json:"batch_size" envconfig:"BLNK_TRANSACTION_BATCH_SIZE"`
-	MaxQueueSize               int           `json:"max_queue_size" envconfig:"BLNK_TRANSACTION_MAX_QUEUE_SIZE"`
-	MaxWorkers                 int           `json:"max_workers" envconfig:"BLNK_TRANSACTION_MAX_WORKERS"`
-	LockDuration               time.Duration `json:"lock_duration" envconfig:"BLNK_TRANSACTION_LOCK_DURATION"`
-	LockWaitTimeout            time.Duration `json:"lock_wait_timeout" envconfig:"BLNK_TRANSACTION_LOCK_WAIT_TIMEOUT"`
-	IndexQueuePrefix           string        `json:"index_queue_prefix" envconfig:"BLNK_TRANSACTION_INDEX_QUEUE_PREFIX"`
-	EnableCoalescing           bool          `json:"enable_coalescing" envconfig:"BLNK_TRANSACTION_ENABLE_COALESCING"`
-	EnableQueuedChecks         bool          `json:"enable_queued_checks" envconfig:"BLNK_TRANSACTION_ENABLE_QUEUED_CHECKS"`
-	DisableBatchReferenceCheck bool          `json:"disable_batch_reference_check" envconfig:"BLNK_TRANSACTION_DISABLE_BATCH_REFERENCE_CHECK"`
+	BatchSize                  int             `json:"batch_size" envconfig:"BLNK_TRANSACTION_BATCH_SIZE"`
+	MaxQueueSize               int             `json:"max_queue_size" envconfig:"BLNK_TRANSACTION_MAX_QUEUE_SIZE"`
+	MaxWorkers                 int             `json:"max_workers" envconfig:"BLNK_TRANSACTION_MAX_WORKERS"`
+	LockDuration               time.Duration   `json:"lock_duration" envconfig:"BLNK_TRANSACTION_LOCK_DURATION"`
+	LockWaitTimeout            time.Duration   `json:"lock_wait_timeout" envconfig:"BLNK_TRANSACTION_LOCK_WAIT_TIMEOUT"`
+	IndexQueuePrefix           string          `json:"index_queue_prefix" envconfig:"BLNK_TRANSACTION_INDEX_QUEUE_PREFIX"`
+	EnableCoalescing           bool            `json:"enable_coalescing" envconfig:"BLNK_TRANSACTION_ENABLE_COALESCING"`
+	EnableQueuedChecks         bool            `json:"enable_queued_checks" envconfig:"BLNK_TRANSACTION_ENABLE_QUEUED_CHECKS"`
+	DisableBatchReferenceCheck bool            `json:"disable_batch_reference_check" envconfig:"BLNK_TRANSACTION_DISABLE_BATCH_REFERENCE_CHECK"`
 	HashChain                  HashChainConfig `json:"hash_chain"`
 }
 

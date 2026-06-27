@@ -25,6 +25,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	model2 "github.com/blnkfinance/blnk/api/model"
@@ -288,4 +289,169 @@ func TestUploadExternalData_RejectsOversizedBody(t *testing.T) {
 
 	assert.Equal(t, http.StatusRequestEntityTooLarge, resp.Code)
 	assert.Contains(t, resp.Body.String(), "exceeds the maximum allowed size")
+}
+
+func uploadURL(t *testing.T, router *gin.Engine, rawURL, source string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	if source != "" {
+		if err := writer.WriteField("source", source); err != nil {
+			t.Fatalf("Failed to write source field: %v", err)
+		}
+	}
+	if rawURL != "" {
+		if err := writer.WriteField("url", rawURL); err != nil {
+			t.Fatalf("Failed to write url field: %v", err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Failed to close multipart writer: %v", err)
+	}
+
+	req := httptest.NewRequest("POST", "/reconciliation/upload", &buf)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	return resp
+}
+
+func TestUploadExternalData_URL(t *testing.T) {
+	t.Run("Valid CSV via URL", func(t *testing.T) {
+		id1, id2 := "ext_"+gofakeit.UUID(), "ext_"+gofakeit.UUID()
+		csvContent := "ID,Amount,Currency,Reference,Description,Date\n" +
+			id1 + ",100.50,USD,ref_" + gofakeit.UUID() + ",test row,2024-01-01T10:00:00Z\n" +
+			id2 + ",200.00,USD,ref_" + gofakeit.UUID() + ",test row two,2024-01-02T10:00:00Z\n"
+
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/csv")
+			fmt.Fprint(w, csvContent)
+		}))
+		defer ts.Close()
+
+		router, _, err := setupRouter()
+		if err != nil {
+			t.Fatalf("Failed to setup router: %v", err)
+		}
+
+		resp := uploadURL(t, router, ts.URL+"/data.csv", "bank-url-test")
+		assert.Equal(t, http.StatusOK, resp.Code)
+
+		var response map[string]interface{}
+		if err := json.Unmarshal(resp.Body.Bytes(), &response); err != nil {
+			t.Fatalf("Failed to decode response: %v", err)
+		}
+		assert.Contains(t, response["upload_id"], "upload_")
+		assert.Equal(t, float64(2), response["record_count"])
+		assert.Equal(t, "bank-url-test", response["source"])
+	})
+
+	t.Run("Invalid URL scheme", func(t *testing.T) {
+		router, _, err := setupRouter()
+		if err != nil {
+			t.Fatalf("Failed to setup router: %v", err)
+		}
+
+		resp := uploadURL(t, router, "ftp://example.com/data.csv", "bank-test")
+		assert.Equal(t, http.StatusBadRequest, resp.Code)
+		assert.Contains(t, resp.Body.String(), "http or https")
+	})
+
+	t.Run("URL server returns error", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		defer ts.Close()
+
+		router, _, err := setupRouter()
+		if err != nil {
+			t.Fatalf("Failed to setup router: %v", err)
+		}
+
+		resp := uploadURL(t, router, ts.URL+"/data.csv", "bank-test")
+		assert.Equal(t, http.StatusBadRequest, resp.Code)
+		assert.Contains(t, resp.Body.String(), "URL returned an error")
+	})
+
+	t.Run("File wins over URL when both present", func(t *testing.T) {
+		id1 := "ext_" + gofakeit.UUID()
+		csvContent := []byte("ID,Amount,Currency,Reference,Description,Date\n" +
+			id1 + ",100.50,USD,ref_" + gofakeit.UUID() + ",test row,2024-01-01T10:00:00Z\n")
+
+		// This server should NOT be hit because file takes priority.
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			t.Error("URL server should not be called when file is present")
+		}))
+		defer ts.Close()
+
+		router, _, err := setupRouter()
+		if err != nil {
+			t.Fatalf("Failed to setup router: %v", err)
+		}
+
+		var buf bytes.Buffer
+		writer := multipart.NewWriter(&buf)
+		_ = writer.WriteField("source", "bank-file")
+		_ = writer.WriteField("url", ts.URL+"/should-not-be-used.csv")
+		part, _ := writer.CreateFormFile("file", "data.csv")
+		_, _ = part.Write(csvContent)
+		writer.Close()
+
+		req := httptest.NewRequest("POST", "/reconciliation/upload", &buf)
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+		resp := httptest.NewRecorder()
+		router.ServeHTTP(resp, req)
+
+		assert.Equal(t, http.StatusOK, resp.Code)
+
+		var response map[string]interface{}
+		if err := json.Unmarshal(resp.Body.Bytes(), &response); err != nil {
+			t.Fatalf("Failed to decode response: %v", err)
+		}
+		assert.Equal(t, float64(1), response["record_count"])
+		assert.Equal(t, "bank-file", response["source"])
+	})
+
+	t.Run("Domain not in whitelist", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, "ID,Amount,Currency,Reference,Description,Date\n")
+		}))
+		defer ts.Close()
+
+		router, _, _ := setupRouterWithConfig(t, func(c *config.Configuration) {
+			c.Server.UploadWhitelist = "trusted.example.com,other.example.com"
+		})
+
+		resp := uploadURL(t, router, ts.URL+"/data.csv", "bank-test")
+		assert.Equal(t, http.StatusBadRequest, resp.Code)
+		assert.Contains(t, resp.Body.String(), "not whitelisted")
+	})
+
+	t.Run("Domain in whitelist allowed", func(t *testing.T) {
+		id1 := "ext_" + gofakeit.UUID()
+		csvContent := "ID,Amount,Currency,Reference,Description,Date\n" +
+			id1 + ",100.50,USD,ref_" + gofakeit.UUID() + ",test row,2024-01-01T10:00:00Z\n"
+
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/csv")
+			fmt.Fprint(w, csvContent)
+		}))
+		defer ts.Close()
+
+		// Extract host from test server URL for whitelist.
+		parsedURL, _ := url.Parse(ts.URL)
+		router, _, _ := setupRouterWithConfig(t, func(c *config.Configuration) {
+			c.Server.UploadWhitelist = parsedURL.Hostname()
+		})
+
+		resp := uploadURL(t, router, ts.URL+"/data.csv", "bank-test")
+		assert.Equal(t, http.StatusOK, resp.Code)
+
+		var response map[string]interface{}
+		if err := json.Unmarshal(resp.Body.Bytes(), &response); err != nil {
+			t.Fatalf("Failed to decode response: %v", err)
+		}
+		assert.Equal(t, float64(1), response["record_count"])
+	})
 }

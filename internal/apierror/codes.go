@@ -110,6 +110,7 @@ const (
 	ErrReconURLFetchFailed         ErrorCode = "RECON_URL_FETCH_FAILED"
 	ErrReconURLInvalidScheme       ErrorCode = "RECON_URL_INVALID_SCHEME"
 	ErrReconURLNotWhitelisted      ErrorCode = "RECON_URL_NOT_WHITELISTED"
+	ErrReconURLPrivateIP           ErrorCode = "RECON_URL_PRIVATE_IP"
 
 	// META — entity metadata
 	ErrMetaEntityNotFound    ErrorCode = "META_ENTITY_NOT_FOUND"
@@ -209,6 +210,7 @@ var statusByCode = map[ErrorCode]int{
 	ErrReconURLFetchFailed:         http.StatusBadRequest,
 	ErrReconURLInvalidScheme:       http.StatusBadRequest,
 	ErrReconURLNotWhitelisted:      http.StatusBadRequest,
+	ErrReconURLPrivateIP:           http.StatusBadRequest,
 
 	ErrMetaEntityNotFound:    http.StatusNotFound,
 	ErrMetaUnsupportedEntity: http.StatusBadRequest,

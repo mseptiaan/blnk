@@ -49,6 +49,7 @@ func setupRouterWithConfig(t *testing.T, mutate func(*config.Configuration)) (*g
 		},
 		Redis:      config.RedisConfig{Dns: "localhost:6379"},
 		DataSource: config.DataSourceConfig{Dns: "postgres://postgres:@localhost:5432/blnk?sslmode=disable"},
+		Server:     config.ServerConfig{AllowPrivateIPs: true},
 	}
 	if mutate != nil {
 		mutate(cfg)

@@ -107,6 +107,7 @@ type ServerConfig struct {
 	MaxUploadSizeMB      int64  `json:"max_upload_size_mb" envconfig:"BLNK_SERVER_MAX_UPLOAD_SIZE_MB"`
 	MaxRequestBodySizeMB int64  `json:"max_request_body_size_mb" envconfig:"BLNK_SERVER_MAX_REQUEST_BODY_SIZE_MB"`
 	UploadWhitelist      string `json:"upload_whitelist" envconfig:"BLNK_UPLOAD_WHITELIST"`
+	AllowPrivateIPs      bool   `json:"allow_private_ips" envconfig:"BLNK_SERVER_ALLOW_PRIVATE_IPS"`
 }
 
 type DataSourceConfig struct {

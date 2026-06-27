@@ -26,7 +26,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
+	"time"
 
 	model2 "github.com/blnkfinance/blnk/api/model"
 	"github.com/blnkfinance/blnk/config"
@@ -453,5 +455,45 @@ func TestUploadExternalData_URL(t *testing.T) {
 			t.Fatalf("Failed to decode response: %v", err)
 		}
 		assert.Equal(t, float64(1), response["record_count"])
+	})
+
+	t.Run("SSRF blocks private IP", func(t *testing.T) {
+		client := safeHTTPClient(5*time.Second, false)
+		_, err := client.Get("http://127.0.0.1/data.csv")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "private IP")
+	})
+
+	t.Run("Content-Length rejects oversized payload", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Length", "999999999")
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer ts.Close()
+
+		router, _, _ := setupRouterWithConfig(t, func(c *config.Configuration) {
+			c.Server.MaxUploadSizeMB = 1
+		})
+
+		resp := uploadURL(t, router, ts.URL+"/data.csv", "bank-test")
+		assert.Equal(t, http.StatusRequestEntityTooLarge, resp.Code)
+		assert.Contains(t, resp.Body.String(), "exceeds the maximum allowed size")
+	})
+
+	t.Run("Download exceeding size limit returns error", func(t *testing.T) {
+		bigContent := strings.Repeat("x", 2*1024*1024)
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/csv")
+			fmt.Fprint(w, bigContent)
+		}))
+		defer ts.Close()
+
+		router, _, _ := setupRouterWithConfig(t, func(c *config.Configuration) {
+			c.Server.MaxUploadSizeMB = 1
+		})
+
+		resp := uploadURL(t, router, ts.URL+"/data.csv", "bank-test")
+		assert.Equal(t, http.StatusBadRequest, resp.Code)
+		assert.Contains(t, resp.Body.String(), "exceeds the maximum allowed size")
 	})
 }

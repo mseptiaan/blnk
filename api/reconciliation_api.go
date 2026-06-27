@@ -18,7 +18,9 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"path"
@@ -33,6 +35,58 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
 )
+
+// safeHTTPClient returns an HTTP client that blocks connections to private,
+// loopback, and link-local addresses to prevent SSRF attacks.
+// When allowPrivate is true, the IP check is skipped (useful for testing).
+func safeHTTPClient(timeout time.Duration, allowPrivate bool) *http.Client {
+	if allowPrivate {
+		return &http.Client{Timeout: timeout}
+	}
+	dialer := &net.Dialer{Timeout: timeout}
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+			if err != nil {
+				return nil, err
+			}
+			for _, ip := range ips {
+				if ip.IP.IsPrivate() || ip.IP.IsLoopback() || ip.IP.IsLinkLocalUnicast() || ip.IP.IsLinkLocalMulticast() {
+					return nil, fmt.Errorf("connection to private IP %s is blocked", ip.IP)
+				}
+			}
+			return dialer.DialContext(ctx, network, net.JoinHostPort(host, port))
+		},
+	}
+	return &http.Client{Transport: transport, Timeout: timeout}
+}
+
+// errLimitReader wraps an io.Reader and returns an error once the byte limit
+// is exceeded instead of silently returning io.EOF like io.LimitReader.
+type errLimitReader struct {
+	r       io.Reader
+	remain  int64
+	maxSize int64
+}
+
+func (l *errLimitReader) Read(p []byte) (int, error) {
+	if l.remain <= 0 {
+		return 0, fmt.Errorf("upload exceeds the maximum allowed size of %d bytes", l.maxSize)
+	}
+	if int64(len(p)) > l.remain {
+		p = p[:l.remain]
+	}
+	n, err := l.r.Read(p)
+	l.remain -= int64(n)
+	if l.remain <= 0 && err == nil {
+		return n, fmt.Errorf("upload exceeds the maximum allowed size of %d bytes", l.maxSize)
+	}
+	return n, err
+}
 
 // UploadExternalData handles the upload of external transaction data.
 // It receives the file and source details from the request, processes the upload,
@@ -103,19 +157,23 @@ func (a Api) UploadExternalData(c *gin.Context) {
 	}
 
 	// Domain whitelist check.
-	if cfg, cfgErr := config.Fetch(); cfgErr == nil && cfg.Server.UploadWhitelist != "" {
-		allowed := false
-		host := strings.ToLower(parsedURL.Hostname())
-		for _, domain := range strings.Split(cfg.Server.UploadWhitelist, ",") {
-			domain = strings.TrimSpace(strings.ToLower(domain))
-			if domain != "" && (host == domain || strings.HasSuffix(host, "."+domain)) {
-				allowed = true
-				break
+	var allowPrivateIPs bool
+	if cfg, cfgErr := config.Fetch(); cfgErr == nil {
+		allowPrivateIPs = cfg.Server.AllowPrivateIPs
+		if cfg.Server.UploadWhitelist != "" {
+			allowed := false
+			host := strings.ToLower(parsedURL.Hostname())
+			for _, domain := range strings.Split(cfg.Server.UploadWhitelist, ",") {
+				domain = strings.TrimSpace(strings.ToLower(domain))
+				if domain != "" && (host == domain || strings.HasSuffix(host, "."+domain)) {
+					allowed = true
+					break
+				}
 			}
-		}
-		if !allowed {
-			respondCode(c, apierror.ErrReconURLNotWhitelisted, "URL domain is not whitelisted", nil)
-			return
+			if !allowed {
+				respondCode(c, apierror.ErrReconURLNotWhitelisted, "URL domain is not whitelisted", nil)
+				return
+			}
 		}
 	}
 
@@ -133,7 +191,8 @@ func (a Api) UploadExternalData(c *gin.Context) {
 		return
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	client := safeHTTPClient(30*time.Second, allowPrivateIPs)
+	resp, err := client.Do(req)
 	if err != nil {
 		logrus.Error(err)
 		respondCode(c, apierror.ErrReconURLFetchFailed, "Failed to fetch URL", nil)
@@ -146,15 +205,24 @@ func (a Api) UploadExternalData(c *gin.Context) {
 		return
 	}
 
+	if maxBytes > 0 && resp.ContentLength > maxBytes {
+		respondCode(c, apierror.ErrGenPayloadTooLarge, "upload exceeds the maximum allowed size", nil)
+		return
+	}
+
 	var reader io.Reader = resp.Body
 	if maxBytes > 0 {
-		reader = io.LimitReader(resp.Body, maxBytes)
+		reader = &errLimitReader{r: resp.Body, remain: maxBytes, maxSize: maxBytes}
 	}
 
 	uploadID, total, err := a.blnk.UploadExternalData(c.Request.Context(), source, reader, fileName)
 	if err != nil {
 		logrus.Error(err)
-		respondCode(c, apierror.ErrReconUploadProcessingFailed, "Failed to process upload", nil)
+		if strings.Contains(err.Error(), "exceeds the maximum allowed size") {
+			respondCode(c, apierror.ErrGenPayloadTooLarge, "upload exceeds the maximum allowed size", nil)
+		} else {
+			respondCode(c, apierror.ErrReconUploadProcessingFailed, "Failed to process upload", nil)
+		}
 		return
 	}
 
